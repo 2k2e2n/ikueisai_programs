@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>8x32 白黒レンダラ (0b配列 → ビットマップ)</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      margin: 16px;
+      color: #111;
+    }
+    h1 {
+      font-size: 18px;
+      margin: 0 0 12px;
+    }
+    .row {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    textarea {
+      width: 520px;
+      height: 220px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      padding: 8px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      resize: vertical;
+      white-space: pre;
+    }
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-width: 220px;
+    }
+    .controls label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+    }
+    .controls input[type="number"] {
+      width: 80px;
+      padding: 4px 6px;
+    }
+    button {
+      padding: 8px 12px;
+      border: 1px solid #999;
+      border-radius: 6px;
+      background: #f5f5f5;
+      cursor: pointer;
+    }
+    button:active { transform: translateY(1px); }
+    .error { color: #b00020; font-size: 13px; min-height: 18px; }
+    .preview {
+      display: grid;
+      grid-template-columns: repeat(32, 1fr);
+      gap: 2px;
+      margin-top: 8px;
+    }
+    .cell {
+      width: var(--cell-size);
+      height: var(--cell-size);
+      background: #fff;
+      border: 1px solid #ddd;
+      box-sizing: border-box;
+    }
+    .cell.on { background: #000; }
+    .tools { display: flex; gap: 8px; flex-wrap: wrap; }
+    .out { width: 100%; font-size: 12px; color: #333; }
+    canvas { border: 1px solid #ccc; border-radius: 6px; }
+    .hint { font-size: 12px; color: #555; }
+    .section-title { font-weight: 600; margin-top: 8px; }
+    .controls .section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding-top: 6px;
+      border-top: 1px dashed #ddd;
+    }
+    select { padding: 4px 6px; }
+  </style>
+  <script>
+    function parseBinaryArray(inputText) {
+      // 0bXXXXXXXX または PIC形式の B'XXXXXXXX' を順番通りに抽出
+      const regex = /0b([01]{1,8})|B['"]([01]{1,8})['"]/gi;
+      const bytes = [];
+      for (const m of inputText.matchAll(regex)) {
+        const bits = (m[1] || m[2] || '').padStart(8, '0');
+        if (bits) bytes.push(bits);
+      }
+      return bytes; // array length should be 32 for 8x32
+    }
+
+    function bytesToBitmap8x32(bytes, msbTop = true) {
+      if (bytes.length < 32) {
+        throw new Error(`32個のバイトが必要です（現在: ${bytes.length}）`);
+      }
+      // Create 8 rows x 32 cols boolean matrix
+      const rows = 8, cols = 32;
+      const bitmap = Array.from({ length: rows }, () => Array(cols).fill(0));
+      for (let x = 0; x < cols; x++) {
+        const b = bytes[x];
+        for (let y = 0; y < rows; y++) {
+          const bitIndex = msbTop ? (7 - y) : y;
+          bitmap[y][x] = b[bitIndex] === '1' ? 1 : 0;
+        }
+      }
+      return bitmap;
+    }
+
+    function renderGrid(container, bitmap, cellSize) {
+      container.style.setProperty('--cell-size', `${cellSize}px`);
+      container.innerHTML = '';
+      for (let y = 0; y < bitmap.length; y++) {
+        for (let x = 0; x < bitmap[0].length; x++) {
+          const div = document.createElement('div');
+          div.className = 'cell' + (bitmap[y][x] ? ' on' : '');
+          div.title = `(${y}, ${x})`;
+          div.dataset.y = String(y);
+          div.dataset.x = String(x);
+          container.appendChild(div);
+        }
+      }
+    }
+
+    function renderCanvas(canvas, bitmap, scale) {
+      const rows = bitmap.length;
+      const cols = bitmap[0].length;
+      canvas.width = cols * scale;
+      canvas.height = rows * scale;
+      const ctx = canvas.getContext('2d', { alpha: false });
+      ctx.imageSmoothingEnabled = false;
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          ctx.fillStyle = bitmap[y][x] ? '#000' : '#fff';
+          ctx.fillRect(x * scale, y * scale, scale, scale);
+        }
+      }
+    }
+
+    function downloadCanvasPng(canvas, filename) {
+      const link = document.createElement('a');
+      link.download = filename;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    }
+
+    function onRender() {
+      const input = document.getElementById('binInput').value;
+      const cellSize = Math.max(4, Math.min(40, Number(document.getElementById('cellSize').value) || 36));
+      const scale = Math.max(1, Math.min(40, Number(document.getElementById('scale').value) || 16));
+      const msbTop = document.getElementById('msbTop').checked;
+      const errorEl = document.getElementById('error');
+      errorEl.textContent = '';
+      try {
+        const bytes = parseBinaryArray(input);
+        if (bytes.length !== 32) {
+          throw new Error(`検出したバイト数: ${bytes.length}（期待: 32）`);
+        }
+        const bitmap = bytesToBitmap8x32(bytes, msbTop);
+        renderGrid(document.getElementById('grid'), bitmap, cellSize);
+        renderCanvas(document.getElementById('canvas'), bitmap, scale);
+        window.__lastBitmap = bitmap;
+        attachGridEditing();
+      } catch (e) {
+        errorEl.textContent = String(e.message || e);
+      }
+    }
+
+    function onDownload() {
+      const canvas = document.getElementById('canvas');
+      if (!canvas.width || !canvas.height) {
+        onRender();
+      }
+      downloadCanvasPng(canvas, 'bitmap_8x32.png');
+    }
+
+    // ===== Presets (localStorage + JSON import/export) =====
+    const PRESET_STORAGE_KEY = 'bitmap8x32.presets.v1';
+
+    function loadPresets() {
+      try {
+        const raw = localStorage.getItem(PRESET_STORAGE_KEY);
+        if (!raw) return [];
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) return [];
+        return arr;
+      } catch {
+        return [];
+      }
+    }
+
+    function savePresets(presets) {
+      localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(presets));
+    }
+
+    function refreshPresetSelect() {
+      const sel = document.getElementById('presetSelect');
+      if (!sel) return;
+      sel.innerHTML = '';
+      const presets = loadPresets();
+      for (const p of presets) {
+        const opt = document.createElement('option');
+        opt.value = p.name;
+        opt.textContent = p.name;
+        sel.appendChild(opt);
+      }
+    }
+
+    function getCurrentPresetData() {
+      const name = String(document.getElementById('presetName').value || '').trim();
+      const input = document.getElementById('binInput').value;
+      const msbTop = document.getElementById('msbTop').checked;
+      const cellSize = Math.max(4, Math.min(40, Number(document.getElementById('cellSize').value) || 36));
+      const scale = Math.max(1, Math.min(40, Number(document.getElementById('scale').value) || 16));
+      const bytes = parseBinaryArray(input);
+      return { name, bytes, msbTop, cellSize, scale };
+    }
+
+    function normalizedBytesText(bytes) {
+      return bytes.map(b => `0b${String(b).padStart(8,'0')}`).join(',\n  ');
+    }
+
+    function formatBytes(bytes, format) {
+      if (format === 'pic') {
+        // PICアセンブリ風: 1バイトにつき3行 + 空行
+        const lines = [];
+        for (const b of bytes) {
+          const bits = String(b).padStart(8, '0');
+          lines.push(`MOVLW\tB'${bits}'`);
+          lines.push('MOVWF\tPORTB');
+          lines.push('CALL\tTIMER2');
+          lines.push('');
+        }
+        return lines.join('\n').trimEnd();
+      }
+      // 既定: 0b配列（コンマ区切り、改行整形）
+      return normalizedBytesText(bytes);
+    }
+
+    function onPresetSave() {
+      const errorEl = document.getElementById('error');
+      errorEl.textContent = '';
+      try {
+        const data = getCurrentPresetData();
+        if (!data.name) throw new Error('プリセット名を入力してください');
+        if (!Array.isArray(data.bytes) || data.bytes.length !== 32) throw new Error('0b配列が32バイトではありません');
+        const presets = loadPresets();
+        const idx = presets.findIndex(p => p.name === data.name);
+        const record = {
+          name: data.name,
+          bytes: data.bytes,
+          msbTop: data.msbTop,
+          cellSize: data.cellSize,
+          scale: data.scale,
+          updatedAt: Date.now()
+        };
+        if (idx >= 0) presets[idx] = record; else presets.push(record);
+        savePresets(presets);
+        refreshPresetSelect();
+      } catch (e) {
+        errorEl.textContent = String(e.message || e);
+      }
+    }
+
+    function onPresetApply() {
+      const errorEl = document.getElementById('error');
+      errorEl.textContent = '';
+      try {
+        const sel = document.getElementById('presetSelect');
+        const name = sel.value;
+        const presets = loadPresets();
+        const p = presets.find(pr => pr.name === name);
+        if (!p) throw new Error('プリセットが見つかりません');
+        document.getElementById('presetName').value = p.name;
+        document.getElementById('msbTop').checked = !!p.msbTop;
+        document.getElementById('cellSize').value = String(p.cellSize ?? 36);
+        document.getElementById('scale').value = String(p.scale ?? 16);
+        document.getElementById('binInput').value = normalizedBytesText(p.bytes);
+        onRender();
+      } catch (e) {
+        errorEl.textContent = String(e.message || e);
+      }
+    }
+
+    function onPresetDelete() {
+      const sel = document.getElementById('presetSelect');
+      const name = sel.value;
+      if (!name) return;
+      const presets = loadPresets().filter(p => p.name !== name);
+      savePresets(presets);
+      refreshPresetSelect();
+    }
+
+    function onPresetExport() {
+      const data = loadPresets();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const now = new Date();
+      const ts = now.toISOString().replace(/[:T]/g, '-').slice(0, 19);
+      a.href = url;
+      a.download = `presets-8x32-${ts}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function onPresetImport() {
+      const fileInput = document.getElementById('presetFile');
+      fileInput.value = '';
+      fileInput.click();
+    }
+
+    function handlePresetFileChange(ev) {
+      const file = ev.target.files && ev.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const json = JSON.parse(String(reader.result || '[]'));
+          if (!Array.isArray(json)) throw new Error('JSONの形式が不正です（配列ではありません）');
+          const existing = loadPresets();
+          const names = new Set(existing.map(p => p.name));
+          for (const p of json) {
+            if (!p || !Array.isArray(p.bytes) || p.bytes.length !== 32 || typeof p.name !== 'string') continue;
+            let name = p.name.trim() || 'imported';
+            if (names.has(name)) {
+              let c = 2;
+              while (names.has(`${name} (${c})`)) c++;
+              name = `${name} (${c})`;
+            }
+            names.add(name);
+            existing.push({
+              name,
+              bytes: p.bytes.map(b => String(b).padStart(8,'0')),
+              msbTop: !!p.msbTop,
+              cellSize: Math.max(4, Math.min(40, Number(p.cellSize ?? 36))),
+              scale: Math.max(1, Math.min(40, Number(p.scale ?? 16))),
+              updatedAt: Date.now()
+            });
+          }
+          savePresets(existing);
+          refreshPresetSelect();
+        } catch (e) {
+          document.getElementById('error').textContent = String(e.message || e);
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    function attachGridEditing() {
+      const grid = document.getElementById('grid');
+      const canvas = document.getElementById('canvas');
+      let painting = false;
+      let paintValue = 1; // 1=turn on, 0=turn off
+      let lastEnteredKey = '';
+      grid.onmousedown = (ev) => {
+        const target = ev.target;
+        if (!(target instanceof HTMLElement) || !target.classList.contains('cell')) return;
+        ev.preventDefault();
+        const y = Number(target.dataset.y);
+        const x = Number(target.dataset.x);
+        const current = window.__lastBitmap?.[y]?.[x] ? 1 : 0;
+        const next = current ? 0 : 1;
+        paintValue = next;
+        painting = true;
+        setCell(y, x, paintValue);
+        lastEnteredKey = `${y}:${x}`;
+        updateCanvas();
+      };
+      grid.onmousemove = (ev) => {
+        if (!painting) return;
+        const target = ev.target;
+        if (!(target instanceof HTMLElement) || !target.classList.contains('cell')) return;
+        const y = Number(target.dataset.y);
+        const x = Number(target.dataset.x);
+        const key = `${y}:${x}`;
+        if (key === lastEnteredKey) return;
+        lastEnteredKey = key;
+        setCell(y, x, paintValue);
+        updateCanvas();
+      };
+      window.addEventListener('mouseup', () => { painting = false; });
+
+      function setCell(y, x, v) {
+        if (!window.__lastBitmap) return;
+        if (y < 0 || y >= 8 || x < 0 || x >= 32) return;
+        window.__lastBitmap[y][x] = v ? 1 : 0;
+        const idx = y * 32 + x;
+        const div = grid.children.item(idx);
+        if (div) {
+          if (v) div.classList.add('on'); else div.classList.remove('on');
+        }
+      }
+      function updateCanvas() {
+        const scale = Math.max(1, Math.min(40, Number(document.getElementById('scale').value) || 16));
+        renderCanvas(canvas, window.__lastBitmap, scale);
+      }
+    }
+
+    function bitmapToBytes(bitmap, msbTop = true) {
+      const rows = 8, cols = 32;
+      const bytes = [];
+      for (let x = 0; x < cols; x++) {
+        let bits = '';
+        for (let y = 0; y < rows; y++) {
+          bits += bitmap[y][x] ? '1' : '0';
+        }
+        if (msbTop) {
+          // row0 -> MSB, so we have bits[y=0..7] as top..bottom; need b[7-y]=bitmap[y]
+          // Our bits are top..bottom; to form byte string index 0..7, we need reverse
+          const arr = bits.split('');
+          const byte = arr.join('');
+          // For msbTop, bitIndex=7-y when reading. When writing, byte[7-y]=bits[y].
+          // Simpler: construct byte by mapping: for bi 0..7, value from bits[7-bi]
+          let out = '';
+          for (let bi = 0; bi < 8; bi++) out += arr[7 - bi];
+          bytes.push(out);
+        } else {
+          // LSB top means bitIndex=y when reading; when writing, byte[y]=bits[y]
+          bytes.push(bits);
+        }
+      }
+      return bytes;
+    }
+
+    function generateFromGrid() {
+      const errorEl = document.getElementById('error');
+      errorEl.textContent = '';
+      if (!window.__lastBitmap) {
+        errorEl.textContent = 'グリッドが未生成です。先にレンダリングしてください。';
+        return;
+      }
+      const msbTop = document.getElementById('msbTop').checked;
+      const outFormat = (document.getElementById('outFormat')?.value) || '0b';
+      const bytes = bitmapToBytes(window.__lastBitmap, msbTop);
+      if (bytes.length !== 32) {
+        errorEl.textContent = `列数が不正です（${bytes.length}）。`;
+        return;
+      }
+      const text = formatBytes(bytes, outFormat);
+      document.getElementById('binInput').value = text;
+    }
+
+    function clearGrid() {
+      if (!window.__lastBitmap) return;
+      for (let y = 0; y < 8; y++) for (let x = 0; x < 32; x++) window.__lastBitmap[y][x] = 0;
+      renderGrid(document.getElementById('grid'), window.__lastBitmap, Math.max(4, Math.min(40, Number(document.getElementById('cellSize').value) || 36)));
+      renderCanvas(document.getElementById('canvas'), window.__lastBitmap, Math.max(1, Math.min(40, Number(document.getElementById('scale').value) || 16)));
+      attachGridEditing();
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('renderBtn').addEventListener('click', onRender);
+      document.getElementById('downloadBtn').addEventListener('click', onDownload);
+      document.getElementById('savePresetBtn')?.addEventListener('click', onPresetSave);
+      document.getElementById('applyPresetBtn')?.addEventListener('click', onPresetApply);
+      document.getElementById('deletePresetBtn')?.addEventListener('click', onPresetDelete);
+      document.getElementById('exportPresetBtn')?.addEventListener('click', onPresetExport);
+      document.getElementById('importPresetBtn')?.addEventListener('click', onPresetImport);
+      document.getElementById('presetFile')?.addEventListener('change', handlePresetFileChange);
+      refreshPresetSelect();
+      document.getElementById('genBtn').addEventListener('click', generateFromGrid);
+      document.getElementById('clearBtn').addEventListener('click', clearGrid);
+      // Autofill example from prompt for convenience
+      const example = [
+        '0b00000000',
+        '0b00100000',
+        '0b11111000',
+        '0b00100001',
+        '0b00100010',
+        '0b00101110',
+        '0b11110000',
+        '0b00100000',
+        '',
+        '0b00000000',
+        '0b11111110',
+        '0b00000010',
+        '0b00000010',
+        '0b00000100',
+        '0b00011000',
+        '0b00001000',
+        '0b00000000',
+        '',
+        '0b00100010',
+        '0b10010010',
+        '0b01000010',
+        '0b00000100',
+        '0b10001000',
+        '0b10110000',
+        '0b00100010',
+        '0b00100100',
+        '',
+        '0b00111000',
+        '0b00100001',
+        '0b11111110',
+        '0b00100000',
+        '0b00100000',
+        '0b00000000',
+        '0b00000000',
+        '0b00000000',
+      ].join(',\n  ');
+      const input = document.getElementById('binInput');
+      if (!input.value.trim()) {
+        input.value = example;
+      }
+      // Defaults requested: MSB unchecked, cell size 36, PNG scale 16
+      document.getElementById('msbTop').checked = false;
+      document.getElementById('cellSize').value = '36';
+      document.getElementById('scale').value = '16';
+      onRender();
+    });
+  </script>
+  </head>
+<body>
+  <h1>8x32 白黒レンダラ</h1>
+  <div class="row">
+    <textarea id="binInput" spellcheck="false" placeholder="例: 0b00000000,\n0b00100000,\n...（合計32個）"></textarea>
+    <div class="controls">
+      <label class="section-title">設定</label>
+      <label><input type="checkbox" id="msbTop"> MSBを上(行0)に割当て</label>
+      <label>セルサイズ(px): <input type="number" id="cellSize" value="36" min="4" max="40"></label>
+      <label>PNG拡大率: <input type="number" id="scale" value="16" min="1" max="40"></label>
+      <label>出力形式:
+        <select id="outFormat">
+          <option value="0b">0b配列（既定）</option>
+          <option value="pic">PIC: MOVLW B'xxxxxxxx'</option>
+        </select>
+      </label>
+      <div class="row" style="gap:8px;">
+        <button id="renderBtn">レンダリング</button>
+        <button id="downloadBtn">PNG保存</button>
+        <button id="genBtn">グリッド→0b生成</button>
+        <button id="clearBtn">グリッド全消去</button>
+      </div>
+      <div id="error" class="error"></div>
+      <div class="hint">32バイト=横32列。チェックONでMSBが上（行0）、OFFでLSBが上。</div>
+      <div class="section section-title">プリセット</div>
+      <div class="section">
+        <label>プリセット名: <input type="text" id="presetName" placeholder="例: サンプル1" style="flex:1"></label>
+        <label>選択:
+          <select id="presetSelect" style="min-width:200px"></select>
+        </label>
+        <div class="row" style="gap:8px;">
+          <button id="savePresetBtn">保存/更新</button>
+          <button id="applyPresetBtn">適用</button>
+          <button id="deletePresetBtn">削除</button>
+          <button id="exportPresetBtn">エクスポート</button>
+          <button id="importPresetBtn">インポート</button>
+        </div>
+        <input id="presetFile" type="file" accept="application/json" style="display:none" />
+      </div>
+    </div>
+  </div>
+
+  <div class="section-title">プレビュー（グリッド）</div>
+  <div id="grid" class="preview"></div>
+
+  <div class="section-title" style="margin-top:12px;">PNG（キャンバス）</div>
+  <canvas id="canvas" width="320" height="80"></canvas>
+</body>
+</html>
+
+
