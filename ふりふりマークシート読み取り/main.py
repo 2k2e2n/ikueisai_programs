@@ -199,6 +199,9 @@ def run_pipeline(config: Dict[str, Any]) -> int:
             print(f"Failed to write '{config['marked_output']}'")
             return 1
 
+    # Export成功メッセージを表示
+    messagebox.showinfo("Success", f"Export completed successfully!\nSaved to: {config['export_path']}")
+
     print(
         f"Pipeline completed: "
         f"{'(crop saved)' if config.get('export_crop', False) else '(crop skipped)'} / "
@@ -417,10 +420,14 @@ def build_gui() -> Dict[str, Any]:
 
 
 def main() -> int:
-    config = build_gui()
-    if not config:
-        return 0
-    return run_pipeline(config)
+    while True:
+        config = build_gui()
+        if not config:
+            return 0
+        result = run_pipeline(config)
+        if result != 0:
+            return result
+        # パイプラインが成功した場合、再度GUIを表示
 
 
 if __name__ == "__main__":

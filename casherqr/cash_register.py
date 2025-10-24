@@ -23,7 +23,7 @@ class ProductManager:
             "001": {"qr_string": "Qhurihuri", "name": "ふりふり", "price": 1000},
             "002": {"qr_string": "Qkarambit", "name": "カラムビット", "price": 400},
             "003": {"qr_string": "Qkatipotikun", "name": "かちぽちくん", "price": 500},
-            "003": {"qr_string": "Qspiral", "name": "スパイラル", "price": 300},
+            "004": {"qr_string": "Qspiral", "name": "スパイラル", "price": 300},
             # 他の商品も追加可能
         }
     
