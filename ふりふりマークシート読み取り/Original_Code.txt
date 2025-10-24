@@ -1,0 +1,114 @@
+;                     　体験入学LEDライト
+;		　　　Date：2013/11/02(Sat)
+;　      Designed by Yonemori　/　yonemori@salesio-sp.ac.jp
+;　Tokyo Salesian Polytechnic　Dep.Electronics and Communication
+; ***************************************************************
+
+	LIST		P=PIC16F1827	;  使用するPICを指定
+	INCLUDE		"P16F1827.INC"	;　読み込む設定ファイルを指定
+
+    __CONFIG    _CONFIG1, _FOSC_HS & _WDTE_OFF & _PWRTE_ON & _CP_OFF & _CPD_OFF
+    __CONFIG    _CONFIG2, _WRT_OFF
+
+;****************************************************************
+
+SEC1	EQU	20H		;秒用カウント変数
+CNT1	EQU	21H		;タイマ1用カウント変数
+CNT2	EQU	22H		;タイマ2用カウント変数
+CNT3	EQU	23H		;タイマ3用カウント変数
+
+; ***************************************************************
+;	初期設定・入力ポート・出力ポートの設定
+; ***************************************************************
+
+	ORG	H'00'			;  プログラムを格納する先頭アドレス　
+
+	MOVLB	H'01'		;　バンク１を選択
+	MOVLW	B'11111111'		;　11111111BをWレジスタに代入
+	MOVWF	TRISA			;　ポートAをすべて入力モードに設定
+	MOVLW	B'00000000'		;　00000000BをWレジスタに代入
+	MOVWF	TRISB			;　ポートBをすべて出力モードに設定  
+	MOVLB	H'03'
+	MOVLW	B'00000000'
+	MOVWF	ANSELA
+	MOVLW	B'00000000'
+	MOVWF	ANSELB
+	MOVLB	H'00'		;  バンク0を選択
+	BCF	STATUS,Z		;　ゼロフラグをクリア
+	CLRF	PORTB			;  ポートBをクリア
+	CLRF	PORTA			;  ポートAをクリア
+
+
+
+; ***************************************************************
+;	スタートスイッチ
+; ***************************************************************
+
+START
+
+	BTFSC	PORTA,0
+	GOTO	START
+	CALL	TIMER3			;　1秒タイマの呼び出し
+	BTFSC	PORTA,0
+	GOTO	START
+
+	CALL	TIMER3			;　1秒タイマの呼び出し
+
+;**********************************
+;マトリクスデータ
+;**********************************
+<-data->
+;**********************************
+
+	CLRF	PORTB			;  ポートBをクリア
+	CALL	TIMER2			;　1秒タイマの呼び出し
+	CALL	TIMER2			;　1秒タイマの呼び出し
+
+TAIKI
+
+	BTFSS	PORTA,0
+	GOTO	TAIKI
+	CALL	TIMER3			;　1秒タイマの呼び出し
+	BTFSS	PORTA,0
+	GOTO	TAIKI
+
+	GOTO	START			;　STARTへ
+
+
+
+;***************************************************************
+;	サブルーチンプログラム
+;***************************************************************
+
+TIMER1	MOVLW	D'255'		;0.1msecタイマサブルーチン
+	MOVWF	CNT1
+LOOP1	NOP
+	DECFSZ	CNT1,1
+	GOTO	LOOP1
+	RETURN
+
+
+TIMER2	MOVLW	D'40'		;10msecタイマサブルーチン
+	MOVWF	CNT2
+LOOP2	NOP
+	CALL	TIMER1
+	DECFSZ	CNT2,1
+	GOTO	LOOP2
+	RETURN
+
+
+TIMER3	MOVLW	D'30'		;0.1msecタイマサブルーチン
+	MOVWF	CNT3
+LOOP3	NOP
+	CALL	TIMER2
+	DECFSZ	CNT3,1
+	GOTO	LOOP3
+	RETURN
+
+
+
+
+
+	END				;  プログラムの終わり
+
+; ***************************************************************

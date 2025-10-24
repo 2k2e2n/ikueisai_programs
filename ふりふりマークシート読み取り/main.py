@@ -11,6 +11,8 @@ from mark_grid import (
     analyze_and_highlight_black_cells,  # セル判定と枠描画
     compute_black_matrix,  # セル判定の0/1行列化
     export_black_matrix_as_binary_bytes,  # 指定フォーマットでexport.txtに保存
+    export_black_matrix_as_pic_assembly,  # PICアセンブリコード形式でエクスポート
+    export_black_matrix_as_template_insertion,  # テンプレート挿入形式でエクスポート
 )
 
 
@@ -20,6 +22,8 @@ DEFAULTS = {
     "crop_output": "debug/crop.png",
     "marked_output": "debug/marked.png",
     "export_path": "output/export.txt",
+    "export_format": "template_insertion",  # "binary", "pic_assembly", or "template_insertion"
+    "template_path": "Original_Code.txt",  # テンプレートファイルのパス
     "grid_cols": 32,
     "grid_rows": 8,
     "black_ratio_threshold": 0.3,
@@ -131,11 +135,34 @@ def run_pipeline(config: Dict[str, Any]) -> int:
     # 後段処理の互換性のため3チャンネルBGRへ拡張
     src = cv2.cvtColor(src_gray, cv2.COLOR_GRAY2BGR)
 
-    # ArUcoマーカーの検出
-    corners, ids = omr_reader.detect_aruco_markers(src)
+    # ArUcoマーカーの検出（柔軟なパラメータ使用）
+    print("ArUcoマーカーを検出中（柔軟なパラメータ使用）...")
+    corners, ids = omr_reader.detect_aruco_markers_flexible(src)
+    
     if ids is None or len(ids) < 4:
+        print(f"検出されたマーカー数: {len(ids) if ids is not None else 0}")
+        if ids is not None:
+            print(f"検出されたマーカーID: {ids.flatten().tolist()}")
+        
+        # デバッグ用：検出結果を可視化（失敗時も）
+        if config.get("debug_aruco_vis", True):
+            omr_reader.visualize_detection(src, corners, ids, "debug/aruco_detection_failed.png")
+        
+        error_msg = f"Could not detect 4 ArUco markers. Detected: {len(ids) if ids is not None else 0} markers."
+        if ids is not None and len(ids) > 0:
+            error_msg += f" Found IDs: {ids.flatten().tolist()}"
+        error_msg += "\n\nPlease check:\n1. Image quality and lighting\n2. ArUco marker visibility\n3. Marker dictionary type\n4. Image orientation"
+        
+        messagebox.showerror("ArUco Detection Failed", error_msg)
         print("Could not detect 4 ArUco markers; aborting.")
         return 1
+    
+    print(f"検出されたマーカー数: {len(ids)}")
+    print(f"検出されたマーカーID: {ids.flatten().tolist()}")
+    
+    # デバッグ用：検出結果を可視化
+    if config.get("debug_aruco_vis", True):
+        omr_reader.visualize_detection(src, corners, ids, "debug/aruco_detection.png")
 
     # 左上,右上,右下,左下の順で4隅を同定
     marker_corners = omr_reader.find_marker_corners(corners, ids)
@@ -187,8 +214,19 @@ def run_pipeline(config: Dict[str, Any]) -> int:
         black_ratio_threshold=float(config["black_ratio_threshold"]),
         gray_threshold=None if config["gray_threshold"] in (None, "") else int(config["gray_threshold"]),
     )
-    # 指定フォーマットのバイナリ表現でexport.txtに保存
-    export_black_matrix_as_binary_bytes(black_matrix, export_path=config["export_path"])
+    
+    # 選択された形式でエクスポート
+    export_format = config.get("export_format", "template_insertion")
+    if export_format == "template_insertion":
+        template_path = config.get("template_path", "Original_Code.txt")
+        export_black_matrix_as_template_insertion(black_matrix, template_path=template_path, export_path=config["export_path"])
+        print(f"テンプレート挿入形式でエクスポート: {config['export_path']}")
+    elif export_format == "pic_assembly":
+        export_black_matrix_as_pic_assembly(black_matrix, export_path=config["export_path"])
+        print(f"PICアセンブリコード形式でエクスポート: {config['export_path']}")
+    else:
+        export_black_matrix_as_binary_bytes(black_matrix, export_path=config["export_path"])
+        print(f"バイナリ形式でエクスポート: {config['export_path']}")
 
     # 緑枠付きの確認画像を保存
     if config.get("export_marked", False):
@@ -230,6 +268,8 @@ def build_gui() -> Dict[str, Any]:
     v_gray = tk.StringVar(value="" if DEFAULTS["gray_threshold"] is None else str(DEFAULTS["gray_threshold"]))
     v_aruco = tk.StringVar(value=DEFAULTS["aruco_dict"])
     v_roi_title = tk.StringVar(value=DEFAULTS["roi_window_title"])
+    v_export_format = tk.StringVar(value=DEFAULTS["export_format"])
+    v_template_path = tk.StringVar(value=DEFAULTS["template_path"])
 
     # レイアウト用パディング
     pad = {"padx": 6, "pady": 4}
@@ -282,25 +322,36 @@ def build_gui() -> Dict[str, Any]:
     # 出力パス群
     row(settings_tab, 3, "出力先", ttk.Entry(settings_tab, textvariable=v_export))
     #ttk.Label(settings_tab, text="書き出すテキストの保存先。", foreground="#666").grid(row=3, column=3, sticky="w", **pad)
+    
+    # エクスポート形式選択
+    export_format_options = ["template_insertion", "pic_assembly", "binary"]
+    row(settings_tab, 4, "エクスポート形式", ttk.Combobox(settings_tab, textvariable=v_export_format, values=export_format_options, state="readonly"))
+    ttk.Label(settings_tab, text="テンプレート挿入 or PICアセンブリ or バイナリ形式", foreground="#666").grid(row=4, column=3, sticky="w", **pad)
+    
+    # テンプレートファイルパス（テンプレート挿入形式の場合のみ表示）
+    ttk.Label(settings_tab, text="テンプレートファイル").grid(row=5, column=0, sticky="w", **pad)
+    ttk.Entry(settings_tab, textvariable=v_template_path).grid(row=5, column=1, sticky="w", **pad)
+    ttk.Button(settings_tab, text="Browse...", command=lambda: v_template_path.set(filedialog.askopenfilename(title="Select template file"))).grid(row=5, column=2, **pad)
+    ttk.Label(settings_tab, text="テンプレート挿入形式で使用するファイル", foreground="#666").grid(row=5, column=3, sticky="w", **pad)
 
 
 
     # グリッド設定
     #row(settings_tab, 4, "列数", ttk.Spinbox(settings_tab, textvariable=v_cols, from_=1, to=256, width=8))
-    ttk.Label(settings_tab, text="列数").grid(row=4, column=0, sticky="w", **pad)
-    ttk.Spinbox(settings_tab, textvariable=v_cols, from_=1, to=256, width=8).grid(row=4, column=1, sticky="w", **pad)
+    ttk.Label(settings_tab, text="列数").grid(row=6, column=0, sticky="w", **pad)
+    ttk.Spinbox(settings_tab, textvariable=v_cols, from_=1, to=256, width=8).grid(row=6, column=1, sticky="w", **pad)
     #ttk.Label(settings_tab, text="グリッドの列数（横方向、例: 32）。", foreground="#666").grid(row=4, column=3, sticky="w", **pad)
     #row(settings_tab, 5, "行数", ttk.Spinbox(settings_tab, textvariable=v_rows, from_=1, to=256, width=8))
     #ttk.Label(settings_tab, text="グリッドの行数（縦方向、例: 8）。", foreground="#666").grid(row=5, column=3, sticky="w", **pad)
-    ttk.Label(settings_tab, text="行数").grid(row=4, column=2, sticky="w", **pad)
-    ttk.Spinbox(settings_tab, textvariable=v_rows, from_=1, to=256, width=8).grid(row=4, column=3, sticky="w", **pad)
+    ttk.Label(settings_tab, text="行数").grid(row=6, column=2, sticky="w", **pad)
+    ttk.Spinbox(settings_tab, textvariable=v_rows, from_=1, to=256, width=8).grid(row=6, column=3, sticky="w", **pad)
 
 
 
     # しきい値設定（黒率/固定グレースケール）
-    row(settings_tab, 6, "マークの閾値(0~1)", ttk.Spinbox(settings_tab, textvariable=v_black, from_=0.0, to=1.0, increment=0.01, width=8))
+    row(settings_tab, 7, "マークの閾値(0~1)", ttk.Spinbox(settings_tab, textvariable=v_black, from_=0.0, to=1.0, increment=0.01, width=8))
     #ttk.Label(settings_tab, text="セルを黒とみなす黒画素割合の閾値 [0〜1]。", foreground="#666").grid(row=6, column=3, sticky="w", **pad)
-    row(settings_tab, 7, "固定二値化の閾値 (0-255 or blank)", ttk.Entry(settings_tab, textvariable=v_gray))
+    row(settings_tab, 8, "固定二値化の閾値 (0-255 or blank)", ttk.Entry(settings_tab, textvariable=v_gray))
     #ttk.Label(settings_tab, text="固定二値化の閾値 [0〜255]。空欄ならセル毎にOtsu。", foreground="#666").grid(row=7, column=3, sticky="w", **pad)
 
 
@@ -308,11 +359,11 @@ def build_gui() -> Dict[str, Any]:
 
 
     # ArUco辞書選択
-    row(settings_tab, 8, "ArUco設定（端のマーク）", ttk.Combobox(settings_tab, textvariable=v_aruco, values=ARUCO_DICT_OPTIONS, state="readonly"))
+    row(settings_tab, 9, "ArUco設定（端のマーク）", ttk.Combobox(settings_tab, textvariable=v_aruco, values=ARUCO_DICT_OPTIONS, state="readonly"))
     #ttk.Label(settings_tab, text="四隅に配置するArUcoマーカー辞書の種類。", foreground="#666").grid(row=8, column=3, sticky="w", **pad)
 
     # ROI選択ウィンドウのタイトル
-    row(settings_tab, 9, "ROI window title", ttk.Entry(settings_tab, textvariable=v_roi_title))
+    row(settings_tab, 10, "ROI window title", ttk.Entry(settings_tab, textvariable=v_roi_title))
     #ttk.Label(settings_tab, text="ROI選択ダイアログのタイトル。", foreground="#666").grid(row=9, column=3, sticky="w", **pad)
 
 
@@ -361,6 +412,8 @@ def build_gui() -> Dict[str, Any]:
             "crop_output": v_crop.get(),
             "marked_output": v_marked.get(),
             "export_path": v_export.get(),
+            "export_format": v_export_format.get(),
+            "template_path": v_template_path.get(),
             "grid_cols": v_cols.get(),
             "grid_rows": v_rows.get(),
             "black_ratio_threshold": v_black.get(),
@@ -386,10 +439,12 @@ def build_gui() -> Dict[str, Any]:
     #   debug タブの内容（必要に応じて拡張）
     #   ===============================================
     dbg_pad = {"padx": 6, "pady": 4}
-    v_debug_verbose = tk.BooleanVar(value=False)
+    v_debug_verbose = tk.BooleanVar(value=True)  # デフォルトで有効
     v_debug_overlay = tk.BooleanVar(value=False)
+    v_debug_aruco_vis = tk.BooleanVar(value=True)  # ArUco検出結果の可視化
     ttk.Checkbutton(debug_tab, text="Verbose logs", variable=v_debug_verbose).grid(row=0, column=0, sticky="w", **dbg_pad)
     ttk.Checkbutton(debug_tab, text="Show overlay grid (preview only)", variable=v_debug_overlay).grid(row=1, column=0, sticky="w", **dbg_pad)
+    ttk.Checkbutton(debug_tab, text="Save ArUco detection visualization", variable=v_debug_aruco_vis).grid(row=2, column=0, sticky="w", **dbg_pad)
 
 
     row(debug_tab, 1, "Crop output", ttk.Entry(debug_tab, textvariable=v_crop))
@@ -413,6 +468,7 @@ def build_gui() -> Dict[str, Any]:
         if cfg is not None:
             cfg["debug_verbose"] = bool(v_debug_verbose.get())
             cfg["debug_overlay_preview"] = bool(v_debug_overlay.get())
+            cfg["debug_aruco_vis"] = bool(v_debug_aruco_vis.get())
         return cfg
 
     root.mainloop()

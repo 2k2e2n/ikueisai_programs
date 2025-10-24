@@ -8,15 +8,131 @@ class OMRReader:
         # ArUcoマーカーの辞書を定義（7x7のマーカー、ID 0,1,2,3 を端に配置）
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_7X7_50)
         self.aruco_params = cv2.aruco.DetectorParameters()
+        
+        # 歪みに強い検出パラメータを設定
+        self.aruco_params.adaptiveThreshWinSizeMin = 3
+        self.aruco_params.adaptiveThreshWinSizeMax = 23
+        self.aruco_params.adaptiveThreshWinSizeStep = 10
+        self.aruco_params.adaptiveThreshConstant = 7
+        
+        # 歪みに対応するため、より柔軟な形状検出パラメータ
+        self.aruco_params.minMarkerPerimeterRate = 0.02  # より小さなマーカーも検出
+        self.aruco_params.maxMarkerPerimeterRate = 6.0    # より大きなマーカーも検出
+        self.aruco_params.polygonalApproxAccuracyRate = 0.05  # より柔軟な多角形近似
+        self.aruco_params.minCornerDistanceRate = 0.03    # より近いコーナーも許可
+        self.aruco_params.minDistanceToBorder = 1         # 境界に近いマーカーも検出
+        self.aruco_params.minMarkerDistanceRate = 0.03     # より近いマーカー間距離も許可
+        
+        # コーナー検出の精度向上（歪み補正）
+        self.aruco_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        self.aruco_params.cornerRefinementWinSize = 7     # より大きなウィンドウサイズ
+        self.aruco_params.cornerRefinementMaxIterations = 50  # より多くの反復
+        self.aruco_params.cornerRefinementMinAccuracy = 0.05  # より低い精度閾値
+        
+        # マーカー内部の処理（歪み対応）
+        self.aruco_params.markerBorderBits = 1
+        self.aruco_params.perspectiveRemovePixelPerCell = 6  # より大きなセルサイズ
+        self.aruco_params.perspectiveRemoveIgnoredMarginPerCell = 0.2  # より大きなマージン
+        self.aruco_params.maxErroneousBitsInBorderRate = 0.5  # より多くのエラーを許可
+        self.aruco_params.minOtsuStdDev = 3.0              # より低い標準偏差閾値
+        self.aruco_params.errorCorrectionRate = 0.8        # より高いエラー訂正率
+        
         self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
         
         # マークシートの設定
         self.marker_corners = []  # ArUcoマーカーの4つの角
         self.perspective_matrix = None
         
-    def detect_aruco_markers(self, image: np.ndarray) -> Tuple[List, List]:
+    def preprocess_image(self, image: np.ndarray) -> np.ndarray:
         """
-        ArUcoマーカーを検出する
+        画像の前処理を行い、ArUcoマーカーの検出精度を向上させる（歪み対応版）
+        
+        Args:
+            image: 入力画像
+            
+        Returns:
+            前処理された画像
+        """
+        # グレースケール変換
+        if image.ndim == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image.copy()
+        
+        # ノイズ除去（歪みがある場合、より強力なノイズ除去）
+        denoised = cv2.medianBlur(gray, 5)  # カーネルサイズを大きく
+        
+        # コントラスト調整（CLAHE）- 歪みによる不均一な照明に対応
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))  # clipLimitを上げる
+        enhanced = clahe.apply(denoised)
+        
+        # ガウシアンブラーで微細なノイズを除去
+        blurred = cv2.GaussianBlur(enhanced, (3, 3), 0)
+        
+        # 歪み補正のための追加処理
+        # 1. モルフォロジー演算でマーカーの形状を改善
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        morphed = cv2.morphologyEx(blurred, cv2.MORPH_CLOSE, kernel)
+        
+        # 2. エッジ強調でマーカーの境界を明確化
+        edges = cv2.Canny(morphed, 50, 150)
+        
+        # 3. エッジと元画像を組み合わせて最終画像を作成
+        final = cv2.addWeighted(morphed, 0.8, edges, 0.2, 0)
+        
+        return final
+
+    def detect_aruco_markers(self, image: np.ndarray, use_preprocessing: bool = True) -> Tuple[List, List]:
+        """
+        ArUcoマーカーを検出する（回転対応版）
+        
+        Args:
+            image: 入力画像
+            use_preprocessing: 前処理を使用するかどうか
+            
+        Returns:
+            corners: 検出されたマーカーの角の座標
+            ids: 検出されたマーカーのID
+        """
+        # 前処理を適用
+        if use_preprocessing:
+            processed_image = self.preprocess_image(image)
+        else:
+            processed_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        
+        # 複数の回転角度で検出を試行
+        best_corners = None
+        best_ids = None
+        max_detected = 0
+        
+        # 0度、90度、180度、270度で回転させて検出
+        for angle in [0, 90, 180, 270]:
+            if angle == 0:
+                rotated_image = processed_image
+            else:
+                h, w = processed_image.shape
+                center = (w // 2, h // 2)
+                rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+                rotated_image = cv2.warpAffine(processed_image, rotation_matrix, (w, h))
+            
+            corners, ids, _ = self.detector.detectMarkers(rotated_image)
+            
+            if ids is not None and len(ids) > max_detected:
+                max_detected = len(ids)
+                best_corners = corners
+                best_ids = ids
+                
+                # 4つ検出できたら即座に返す
+                if len(ids) >= 4:
+                    break
+        
+        return best_corners, best_ids
+
+
+
+    def detect_aruco_markers_flexible(self, image: np.ndarray) -> Tuple[List, List]:
+        """
+        柔軟なパラメータでArUcoマーカーを検出する（歪み対応）
         
         Args:
             image: 入力画像
@@ -25,11 +141,140 @@ class OMRReader:
             corners: 検出されたマーカーの角の座標
             ids: 検出されたマーカーのID
         """
-        # 入力がカラーでも白黒でも動作するように統一してグレースケール化
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
-        corners, ids, _ = self.detector.detectMarkers(gray)
+        # より柔軟なパラメータを設定
+        flexible_params = cv2.aruco.DetectorParameters()
         
-        return corners, ids
+        # 非常に柔軟な設定
+        flexible_params.adaptiveThreshWinSizeMin = 3
+        flexible_params.adaptiveThreshWinSizeMax = 31
+        flexible_params.adaptiveThreshWinSizeStep = 14
+        flexible_params.adaptiveThreshConstant = 5
+        flexible_params.minMarkerPerimeterRate = 0.01
+        flexible_params.maxMarkerPerimeterRate = 8.0
+        flexible_params.polygonalApproxAccuracyRate = 0.08
+        flexible_params.minCornerDistanceRate = 0.01
+        flexible_params.minDistanceToBorder = 0
+        flexible_params.minMarkerDistanceRate = 0.01
+        flexible_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        flexible_params.cornerRefinementWinSize = 9
+        flexible_params.cornerRefinementMaxIterations = 100
+        flexible_params.cornerRefinementMinAccuracy = 0.01
+        flexible_params.markerBorderBits = 1
+        flexible_params.perspectiveRemovePixelPerCell = 8
+        flexible_params.perspectiveRemoveIgnoredMarginPerCell = 0.3
+        flexible_params.maxErroneousBitsInBorderRate = 0.7
+        flexible_params.minOtsuStdDev = 1.0
+        flexible_params.errorCorrectionRate = 0.9
+        
+        # 前処理された画像で検出
+        processed_image = self.preprocess_image(image)
+        
+        best_corners = None
+        best_ids = None
+        max_detected = 0
+        
+        # 複数の辞書とスケールで試行
+        dict_options = [cv2.aruco.DICT_7X7_50, cv2.aruco.DICT_6X6_50, cv2.aruco.DICT_5X5_50, cv2.aruco.DICT_4X4_50]
+        scales = [0.3, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
+        
+        for dict_type in dict_options:
+            temp_dict = cv2.aruco.getPredefinedDictionary(dict_type)
+            temp_detector = cv2.aruco.ArucoDetector(temp_dict, flexible_params)
+            
+            for scale in scales:
+                if scale == 1.0:
+                    scaled_image = processed_image
+                else:
+                    h, w = processed_image.shape
+                    new_h, new_w = int(h * scale), int(w * scale)
+                    scaled_image = cv2.resize(processed_image, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+                
+                corners, ids, _ = temp_detector.detectMarkers(scaled_image)
+                
+                if ids is not None and len(ids) > max_detected:
+                    max_detected = len(ids)
+                    
+                    if scale != 1.0:
+                        adjusted_corners = []
+                        for corner in corners:
+                            adjusted_corner = corner[0] / scale
+                            adjusted_corners.append([adjusted_corner])
+                        best_corners = adjusted_corners
+                    else:
+                        best_corners = corners
+                    
+                    best_ids = ids
+                    
+                    if len(ids) >= 4:
+                        return best_corners, best_ids
+        
+        return best_corners, best_ids
+
+    def visualize_detection(self, image: np.ndarray, corners: List, ids: List, 
+                           output_path: str = "debug/detection_result.png") -> bool:
+        """
+        検出結果を可視化してデバッグ画像を保存する
+        
+        Args:
+            image: 元画像
+            corners: 検出されたマーカーの角の座標
+            ids: 検出されたマーカーのID
+            output_path: 出力画像のパス
+            
+        Returns:
+            保存に成功した場合True
+        """
+        try:
+            # 画像をコピー
+            vis_image = image.copy()
+            
+            if ids is not None and len(ids) > 0:
+                # 検出されたマーカーを描画（型を適切に変換）
+                try:
+                    # cornersをnumpy配列に変換
+                    if corners is not None:
+                        corners_array = np.array(corners, dtype=np.float32)
+                        cv2.aruco.drawDetectedMarkers(vis_image, corners_array, ids)
+                except Exception as e:
+                    print(f"マーカー描画中にエラーが発生しました: {e}")
+                    # エラーが発生した場合は描画をスキップ
+                    pass
+                
+                # 各マーカーのIDと中心座標を表示
+                try:
+                    for i, marker_id in enumerate(ids.flatten()):
+                        if corners is not None and i < len(corners):
+                            marker_corners = corners[i][0]
+                            center = np.mean(marker_corners, axis=0)
+                            center = (int(center[0]), int(center[1]))
+                            
+                            # IDを表示
+                            cv2.putText(vis_image, f"ID:{marker_id}", 
+                                       (center[0] - 20, center[1] - 20),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                except Exception as e:
+                    print(f"マーカー情報表示中にエラーが発生しました: {e}")
+            
+            # 検出結果の情報を画像に追加
+            info_text = f"Detected: {len(ids) if ids is not None else 0} markers"
+            cv2.putText(vis_image, info_text, (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 2)
+            
+            # 画像を保存
+            import os
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            success = cv2.imwrite(output_path, vis_image)
+            
+            if success:
+                print(f"検出結果を保存しました: {output_path}")
+            else:
+                print(f"検出結果の保存に失敗しました: {output_path}")
+                
+            return success
+            
+        except Exception as e:
+            print(f"可視化中にエラーが発生しました: {e}")
+            return False
     
     def find_marker_corners(self, corners: List, ids: List) -> Optional[np.ndarray]:
         """

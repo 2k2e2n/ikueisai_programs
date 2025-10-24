@@ -130,9 +130,9 @@ def export_black_matrix_as_binary_bytes(black_matrix: np.ndarray, export_path: s
     lines = []
     for c in range(cols):
         value = 0
-        # Map row 0 (top) to MSB (bit 7), row 7 (bottom) to LSB (bit 0)
+        # Map row 0 (top) to LSB (bit 0), row 7 (bottom) to MSB (bit 7)
         for r in range(rows):
-            bit_pos = 7 - r  # assumes rows <= 8
+            bit_pos = r  # row 0 -> bit 0 (LSB), row 7 -> bit 7 (MSB)
             if black_matrix[r, c]:
                 value |= (1 << bit_pos)
         lines.append(f"0b{value:08b},")
@@ -147,6 +147,107 @@ def export_black_matrix_as_binary_bytes(black_matrix: np.ndarray, export_path: s
     with open(export_path, "w", encoding="utf-8") as f:
         for line in grouped_lines:
             f.write(line + "\n")
+
+
+def export_black_matrix_as_pic_assembly(black_matrix: np.ndarray, export_path: str) -> None:
+    """
+    PICアセンブリコード形式でマトリックスデータをエクスポートする
+    
+    Args:
+        black_matrix: 黒セルを1、白セルを0で表したマトリックス
+        export_path: 出力ファイルのパス
+    """
+    rows, cols = black_matrix.shape
+    
+    with open(export_path, "w", encoding="utf-8") as f:
+        f.write("; PIC Assembly code generated from mark sheet data\n")
+        f.write("; Format: MOVLW B'xxxxxxxx' -> MOVWF PORTB -> CALL TIMER2\n\n")
+        
+        for c in range(cols):
+            value = 0
+            # Map row 0 (top) to LSB (bit 0), row 7 (bottom) to MSB (bit 7)
+            for r in range(rows):
+                bit_pos = r  # row 0 -> bit 0 (LSB), row 7 -> bit 7 (MSB)
+                if black_matrix[r, c]:
+                    value |= (1 << bit_pos)
+            
+            # PICアセンブリコード形式で出力
+            binary_str = f"{value:08b}"
+            f.write(f"    MOVLW    B'{binary_str}'\n")
+            f.write(f"    MOVWF    PORTB\n")
+            f.write(f"    CALL     TIMER2\n")
+            
+            # 8列ごとに空行を挿入（読みやすさのため）
+            if (c + 1) % 8 == 0 and c < cols - 1:
+                f.write("\n")
+
+
+def export_black_matrix_as_template_insertion(black_matrix: np.ndarray, template_path: str, export_path: str) -> None:
+    """
+    テンプレートファイルの<-data->部分にマトリックスデータを挿入してエクスポートする
+    
+    Args:
+        black_matrix: 黒セルを1、白セルを0で表したマトリックス
+        template_path: テンプレートファイルのパス
+        export_path: 出力ファイルのパス
+    """
+    rows, cols = black_matrix.shape
+    
+    # テンプレートファイルを読み込み（複数のエンコーディングを試行）
+    template_content = None
+    encodings = ['utf-8', 'shift_jis', 'cp932', 'latin-1']
+    
+    for encoding in encodings:
+        try:
+            with open(template_path, "r", encoding=encoding) as f:
+                template_content = f.read()
+            print(f"テンプレートファイルを読み込みました（エンコーディング: {encoding}）")
+            break
+        except UnicodeDecodeError:
+            continue
+        except FileNotFoundError:
+            print(f"テンプレートファイルが見つかりません: {template_path}")
+            return
+    
+    if template_content is None:
+        print(f"テンプレートファイルの読み込みに失敗しました: {template_path}")
+        return
+    
+    # マークシートデータをPICアセンブリコード形式で生成
+    data_lines = []
+    for c in range(cols):
+        value = 0
+        # Map row 0 (top) to LSB (bit 0), row 7 (bottom) to MSB (bit 7)
+        for r in range(rows):
+            bit_pos = r  # row 0 -> bit 0 (LSB), row 7 -> bit 7 (MSB)
+            if black_matrix[r, c]:
+                value |= (1 << bit_pos)
+        
+        # PICアセンブリコード形式で出力
+        binary_str = f"{value:08b}"
+        data_lines.append(f"    MOVLW    B'{binary_str}'")
+        data_lines.append(f"    MOVWF    PORTB")
+        data_lines.append(f"    CALL     TIMER2")
+        
+        # 8列ごとに空行を挿入（読みやすさのため）
+        if (c + 1) % 8 == 0 and c < cols - 1:
+            data_lines.append("")
+    
+    # 生成されたデータを文字列として結合
+    data_content = "\n".join(data_lines)
+    
+    # テンプレートの<-data->部分を置換
+    if "<-data->" in template_content:
+        final_content = template_content.replace("<-data->", data_content)
+    else:
+        print("警告: テンプレートファイルに<-data->マーカーが見つかりません")
+        return
+    
+    # 結果をファイルに書き込み
+    with open(export_path, "w", encoding="utf-8") as f:
+        f.write(final_content)
+    
+    print(f"テンプレート挿入形式でエクスポート完了: {export_path}")
 
 
 def main() -> int:
